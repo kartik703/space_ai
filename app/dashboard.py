@@ -1,47 +1,78 @@
-import os, sys
+# app/dashboard.py
+import os
+import sys
 import requests
 import pandas as pd
 import streamlit as st
 import altair as alt
 
+# Allow "from app.xxx import ..." when run by Streamlit
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from app.advisor import risk_level, advisory_message, sector_advisory
 from app.forecast_realtime import forecast_next_kp
 
-API_URL = os.getenv("API_URL")  # set on Streamlit Cloud; if unset we’ll fallback to local model
+# ──────────────────────────────────────────────────────────
+# Config
+# ──────────────────────────────────────────────────────────
+API_URL = os.getenv("API_URL")  # Set on Streamlit Cloud to your Railway /forecast URL
 
 st.set_page_config(page_title="AI Space Weather Guardian", layout="centered")
 st.title("🌌 AI Space Weather Guardian")
-st.caption("AI-powered multi-horizon forecasts of geomagnetic activity (Kp).")
+st.caption("AI-powered **multi-horizon forecasts** of geomagnetic activity (**Kp**).")
 
 def risk_badge(kp_val: float) -> str:
     lvl = risk_level(kp_val)
     color = {"Low": "#16a34a", "Medium": "#f59e0b", "High": "#ef4444"}[lvl]
     return f"<span style='background:{color}22;color:{color};padding:3px 8px;border-radius:8px;font-weight:600'>{lvl}</span>"
 
-# Minimal latest Kp (static placeholder for first deploy; you can wire real ingestion later)
+# ──────────────────────────────────────────────────────────
+# Latest Kp (placeholder for now; wire to ingestion later)
+# ──────────────────────────────────────────────────────────
 latest_kp = 2.0
 st.metric("Latest Kp Index", f"{latest_kp:.2f}", delta=0.0)
 
+# ──────────────────────────────────────────────────────────
+# Current Risk
+# ──────────────────────────────────────────────────────────
 st.subheader("Current Risk Assessment")
 st.markdown(f"**Level**: {risk_badge(latest_kp)}", unsafe_allow_html=True)
 st.info(advisory_message(latest_kp))
 
+# ──────────────────────────────────────────────────────────
+# Sector-Specific Advisories (fixed rendering)
+# ──────────────────────────────────────────────────────────
 st.subheader("📡 Sector-Specific Advisories")
 msgs = sector_advisory(latest_kp)
 c1, c2, c3 = st.columns(3)
+
 with c1:
     st.markdown("✈️ **Aviation**")
-    st.success(msgs["Aviation"]) if "⚠️" not in msgs["Aviation"] else st.warning(msgs["Aviation"])
+    if "⚠️" in msgs["Aviation"] or "Reroute" in msgs["Aviation"]:
+        st.warning(msgs["Aviation"])
+    else:
+        st.success(msgs["Aviation"])
+
 with c2:
     st.markdown("🛰 **Satellites**")
-    st.success(msgs["Satellites"]) if "⚠️" not in msgs["Satellites"] else st.warning(msgs["Satellites"])
+    if "⚠️" in msgs["Satellites"] or "safe-mode" in msgs["Satellites"]:
+        st.warning(msgs["Satellites"])
+    else:
+        st.success(msgs["Satellites"])
+
 with c3:
     st.markdown("⚡ **Energy Grids**")
-    st.success(msgs["Energy"]) if "⚡" not in msgs["Energy"] else st.warning(msgs["Energy"])
+    if "⚡" in msgs["Energy"] or "risk" in msgs["Energy"]:
+        st.warning(msgs["Energy"])
+    else:
+        st.success(msgs["Energy"])
 
+# ──────────────────────────────────────────────────────────
+# Forecasts (API first; graceful fallback to local model)
+# ──────────────────────────────────────────────────────────
 st.subheader("🔮 Forecasts (Kp) — 1h / 3h / 6h")
 results, uncert, source = None, None, "api"
+
 try:
     if API_URL:
         r = requests.get(API_URL, timeout=10)
@@ -51,23 +82,28 @@ try:
         uncert = float(payload.get("uncertainty_kp", 0.3))
     else:
         raise RuntimeError("API_URL not set")
-except Exception:
+except Exception as api_err:
     try:
-        res = forecast_next_kp()
+        res = forecast_next_kp(horizons=(1, 3, 6))
         results = res["forecasts"]
         uncert = float(res.get("uncertainty_kp", 0.3))
         source = "local"
         st.info("Using local model fallback (no API).")
-    except Exception as ee:
-        st.error(f"❌ Could not fetch forecasts via API or local model: {ee}")
+    except Exception as local_err:
+        st.error(
+            "❌ Could not get forecasts via API or local model.\n\n"
+            f"API error: {api_err}\nLocal error: {local_err}"
+        )
 
 if results:
     col1, col2 = st.columns(2)
+
     with col1:
         st.write("**Best Model Forecasts**")
         for h, v in results.items():
             v = float(v)
             st.markdown(f"{h}: **{v:.2f} ± {uncert:.2f}** &nbsp; {risk_badge(v)}", unsafe_allow_html=True)
+
     with col2:
         peak_h = max(results, key=lambda k: results[k])
         peak_v = float(results[peak_h])
@@ -75,24 +111,39 @@ if results:
         st.markdown(f"Peak: **{peak_h}**")
         st.markdown(f"Kp Forecast: **{peak_v:.2f} ± {uncert:.2f}** &nbsp; {risk_badge(peak_v)}", unsafe_allow_html=True)
         st.caption(advisory_message(peak_v))
+
     st.caption(f"Forecast source: **{source}**")
 
-    # Simple chart with future points
-    hist = pd.DataFrame({"Time": pd.date_range(end=pd.Timestamp.utcnow(), periods=24, freq="H"),
-                         "Kp": [latest_kp]*24, "Type":"History"})
-    last_t = hist["Time"].iloc[-1]
+    # ──────────────────────────────────────────────────────
+    # Chart: Past 24h (placeholder) + forecast w/ band
+    # ──────────────────────────────────────────────────────
+    history = pd.DataFrame(
+        {
+            "Time": pd.date_range(end=pd.Timestamp.utcnow(), periods=24, freq="h"),  # 'h' avoids FutureWarning
+            "Kp": [latest_kp] * 24,
+            "Type": "History",
+        }
+    )
+    last_t = history["Time"].iloc[-1]
     items = sorted(((int(k[:-1]), float(v)) for k, v in results.items()), key=lambda x: x[0])
     f_times = [last_t + pd.Timedelta(hours=h) for h, _ in items]
-    f_vals  = [v for _, v in items]
-    fdf = pd.DataFrame({"Time": f_times, "Kp": f_vals, "Type":"Forecast"})
-    fdf["Kp_lo"] = fdf["Kp"] - (uncert or 0.0)
-    fdf["Kp_hi"] = fdf["Kp"] + (uncert or 0.0)
-    combined = pd.concat([hist, fdf])
+    f_vals = [v for _, v in items]
+    fdf = pd.DataFrame({"Time": f_times, "Kp": f_vals, "Type": "Forecast"})
+    uncert = uncert or 0.0
+    fdf["Kp_lo"] = fdf["Kp"] - uncert
+    fdf["Kp_hi"] = fdf["Kp"] + uncert
+
+    combined = pd.concat([history, fdf], ignore_index=True)
+
     base = alt.Chart(combined).encode(x="Time:T")
-    st.altair_chart(
-        (base.transform_filter(alt.datum.Type=="History").mark_line(color="#60a5fa").encode(y="Kp:Q") +
-         alt.Chart(fdf).mark_area(opacity=0.2, color="#f59e0b").encode(x="Time:T", y="Kp_lo:Q", y2="Kp_hi:Q") +
-         alt.Chart(fdf).mark_line(color="#f59e0b").encode(x="Time:T", y="Kp:Q")
-        ).properties(height=320),
-        use_container_width=True
+    hist_line = (
+        base.transform_filter(alt.datum.Type == "History")
+        .mark_line(color="#60a5fa")
+        .encode(y=alt.Y("Kp:Q", title="Kp"))
     )
+    band = alt.Chart(fdf).mark_area(opacity=0.2, color="#f59e0b").encode(
+        x="Time:T", y="Kp_lo:Q", y2="Kp_hi:Q"
+    )
+    forecast_line = alt.Chart(fdf).mark_line(color="#f59e0b").encode(x="Time:T", y="Kp:Q")
+
+    st.altair_chart((hist_line + band + forecast_line).properties(height=320), use_container_width=True)
