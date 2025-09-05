@@ -61,3 +61,6 @@ def fetch_latest_kp() -> float:
     if not df.empty:
         return float(df["kp_index"].iloc[-1])
     return 2.0
+if __name__ == "__main__":
+    update_dataset()
+    print(fetch_latest_kp())
