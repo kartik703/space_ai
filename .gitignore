@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+
+# Virtual envs
+venv/
+.venv/
+.env
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Data & models (keep sample small; Actions will commit real ones)
+data/*.csv
+!data/.gitkeep
+models/*
+!models/.gitkeep
