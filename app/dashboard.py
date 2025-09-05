@@ -15,27 +15,28 @@ from app.forecast_realtime import forecast_next_kp
 # ────────────────────────────────────────────────
 # Config
 # ────────────────────────────────────────────────
-API_URL = os.getenv("API_URL", "").rstrip("/")  # set this in Streamlit secrets
+API_URL = os.getenv("API_URL")  # must be set in Streamlit secrets
+
 st.set_page_config(page_title="AI Space Weather Guardian", layout="centered")
 st.title("🌌 AI Space Weather Guardian")
 st.caption("AI-powered **multi-horizon forecasts** of geomagnetic activity (**Kp**).")
 
 
+# ────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────
 def risk_badge(kp_val: float) -> str:
-    """Render a colored badge for risk level."""
     lvl = risk_level(kp_val)
     color = {"Low": "#16a34a", "Medium": "#f59e0b", "High": "#ef4444"}[lvl]
-    return (
-        f"<span style='background:{color}22;color:{color};"
-        f"padding:3px 8px;border-radius:8px;font-weight:600'>{lvl}</span>"
-    )
+    return f"<span style='background:{color}22;color:{color};padding:3px 8px;border-radius:8px;font-weight:600'>{lvl}</span>"
 
 
 # ────────────────────────────────────────────────
-# Latest Kp (placeholder — later connect ingestion)
+# Latest Kp (placeholder for now)
 # ────────────────────────────────────────────────
 latest_kp = 2.0
 st.metric("Latest Kp Index", f"{latest_kp:.2f}", delta=0.0)
+
 
 # ────────────────────────────────────────────────
 # Current Risk
@@ -44,8 +45,9 @@ st.subheader("Current Risk Assessment")
 st.markdown(f"**Level**: {risk_badge(latest_kp)}", unsafe_allow_html=True)
 st.info(advisory_message(latest_kp))
 
+
 # ────────────────────────────────────────────────
-# Sector-Specific Advisories
+# Sector Advisories
 # ────────────────────────────────────────────────
 st.subheader("📡 Sector-Specific Advisories")
 msgs = sector_advisory(latest_kp)
@@ -72,37 +74,39 @@ with c3:
     else:
         st.success(msgs["Energy"])
 
+
 # ────────────────────────────────────────────────
-# Forecasts (API → fallback local model)
+# Forecasts (API first, fallback local)
 # ────────────────────────────────────────────────
 st.subheader("🔮 Forecasts (Kp) — 1h / 3h / 6h")
 results, uncert, source = None, None, "api"
 
 try:
     if API_URL:
-        r = requests.get(f"{API_URL}/forecast", timeout=10)
+        st.caption(f"🌍 Using API at {API_URL}")
+        r = requests.get(API_URL, timeout=10)
         r.raise_for_status()
         payload = r.json()
         results = payload.get("forecasts", {})
         uncert = float(payload.get("uncertainty_kp", 0.3))
-        st.success("✅ Using Railway API as forecast source.")
+        source = "api"
     else:
-        raise RuntimeError("API_URL not set in environment")
+        raise RuntimeError("API_URL not set")
 except Exception as api_err:
     try:
         res = forecast_next_kp(horizons=(1, 3, 6))
         results = res["forecasts"]
         uncert = float(res.get("uncertainty_kp", 0.3))
         source = "local"
-        st.info("⚠️ Using local model fallback (API not available).")
+        st.warning("⚠️ Using local model fallback (API not available).")
     except Exception as local_err:
         st.error(
-            f"❌ Could not get forecasts.\n\n"
-            f"API error: {api_err}\nLocal error: {local_err}"
+            f"❌ Could not get forecasts.\n\nAPI error: {api_err}\nLocal error: {local_err}"
         )
 
+
 # ────────────────────────────────────────────────
-# Display Forecasts + Chart
+# Render results
 # ────────────────────────────────────────────────
 if results:
     col1, col2 = st.columns(2)
@@ -129,7 +133,7 @@ if results:
 
     st.caption(f"Forecast source: **{source}**")
 
-    # Chart: Past 24h (flat placeholder) + forecast with uncertainty band
+    # Chart
     history = pd.DataFrame(
         {
             "Time": pd.date_range(end=pd.Timestamp.utcnow(), periods=24, freq="h"),
@@ -142,7 +146,6 @@ if results:
     f_times = [last_t + pd.Timedelta(hours=h) for h, _ in items]
     f_vals = [v for _, v in items]
     fdf = pd.DataFrame({"Time": f_times, "Kp": f_vals, "Type": "Forecast"})
-    uncert = uncert or 0.0
     fdf["Kp_lo"] = fdf["Kp"] - uncert
     fdf["Kp_hi"] = fdf["Kp"] + uncert
 
@@ -154,14 +157,9 @@ if results:
         .mark_line(color="#60a5fa")
         .encode(y=alt.Y("Kp:Q", title="Kp"))
     )
-    band = (
-        alt.Chart(fdf)
-        .mark_area(opacity=0.2, color="#f59e0b")
-        .encode(x="Time:T", y="Kp_lo:Q", y2="Kp_hi:Q")
+    band = alt.Chart(fdf).mark_area(opacity=0.2, color="#f59e0b").encode(
+        x="Time:T", y="Kp_lo:Q", y2="Kp_hi:Q"
     )
     forecast_line = alt.Chart(fdf).mark_line(color="#f59e0b").encode(x="Time:T", y="Kp:Q")
 
-    st.altair_chart(
-        (hist_line + band + forecast_line).properties(height=320),
-        use_container_width=True,
-    )
+    st.altair_chart((hist_line + band + forecast_line).properties(height=320), use_container_width=True)
